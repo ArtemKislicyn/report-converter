@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Конвертер отчёта StartExam</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f8;
+    --card: #ffffff;
+    --border: #e2e2e6;
+    --accent: #2f6fed;
+    --accent-dark: #1f52c0;
+    --text: #1c1c1f;
+    --muted: #6b6b74;
+    --danger: #c23b3b;
+    --ok: #1f8a4c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px 20px 60px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+
+  .dropzone {
+    background: var(--card);
+    border: 2px dashed var(--border);
+    border-radius: 14px;
+    padding: 48px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  .dropzone.dragover {
+    border-color: var(--accent);
+    background: #eef4ff;
+  }
+  .dropzone .icon { font-size: 34px; margin-bottom: 10px; }
+  .dropzone .main { font-size: 15px; font-weight: 600; }
+  .dropzone .sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  input[type=file] { display: none; }
+
+  .status {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    display: none;
+  }
+  .status.show { display: block; }
+  .status.ok { background: #eafaf0; color: var(--ok); border: 1px solid #bfe9cf; }
+  .status.error { background: #fdeeee; color: var(--danger); border: 1px solid #f3c9c9; }
+  .status.progress { background: #eef4ff; color: var(--accent-dark); border: 1px solid #cfe0fb; }
+
+  .panel {
+    margin-top: 24px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 20px;
+    display: none;
+  }
+  .panel.show { display: block; }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .panel-head h2 { font-size: 16px; margin: 0; }
+
+  button.download {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.download:hover { background: var(--accent-dark); }
+  button.reset {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    text-align: center;
+  }
+  th { background: #f2f3f5; font-weight: 600; }
+  td.company { text-align: left; }
+  tr.total td { font-weight: 700; background: #f8f9fb; }
+  .table-scroll { overflow-x: auto; }
+
+  details.rules { margin-top: 22px; font-size: 13px; color: var(--muted); }
+  details.rules summary { cursor: pointer; font-weight: 600; color: var(--text); }
+  details.rules ul { margin: 8px 0 0 18px; padding: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Конвертер отчёта StartExam</h1>
+  <div class="subtitle">Перетащите файл выгрузки (.xlsx) — получите утверждённую форму отчёта.</div>
+
+  <div class="dropzone" id="dropzone">
+    <div class="icon">📄</div>
+    <div class="main">Перетащите файл сюда или нажмите, чтобы выбрать</div>
+    <div class="sub">Ожидается .xlsx с колонками «Центр наименование» и «Время»</div>
+    <input type="file" id="fileInput" accept=".xlsx">
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="panel" id="panel">
+    <div class="panel-head">
+      <h2 id="panelTitle">Результат</h2>
+      <div style="display:flex; gap:8px;">
+        <button class="reset" id="resetBtn">Загрузить другой файл</button>
+        <button class="download" id="downloadBtn">Скачать отчёт (.xlsx)</button>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table id="resultTable"></table>
+    </div>
+  </div>
+
+  <details class="rules">
+    <summary>Как считаются категории</summary>
+    <ul>
+      <li><b>Тестирование</b> — общее число сеансов по компании.</li>
+      <li><b>1 категория:</b> 00:01–15:00 длительности сеанса</li>
+      <li><b>2 категория:</b> 15:01–30:00</li>
+      <li><b>3 категория:</b> 30:01–45:00</li>
+      <li><b>4 категория:</b> 45:01–60:00</li>
+      <li>Сеансы длительностью 0 или более 60 минут учитываются в «Тестирование», но не попадают ни в одну категорию.</li>
+      <li>Список компаний берётся из самой выгрузки (колонка «Центр наименование») и сортируется по алфавиту — заранее заданного перечня нет.</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+const COL_COMPANY = "Центр наименование";
+const COL_DURATION = "Время";
+const CATEGORY_LABELS = [
+  "1 категория 00:01-15:00",
+  "2 категория 15:01-30:00",
+  "3 категория 30:01-45:00",
+  "4 категория 45:01-60:00",
+];
+
+let lastWorkbookArray = null; // готовый output для скачивания
+
+function durationToMinutes(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  if (value instanceof Date) {
+    return value.getUTCHours() * 60 + value.getUTCMinutes() + value.getUTCSeconds() / 60;
+  }
+  if (typeof value === "number") {
+    // Excel хранит длительность как долю суток
+    return value * 24 * 60;
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return 0;
+    const parts = s.split(":").map(p => parseFloat(p));
+    if (parts.some(isNaN)) return 0;
+    while (parts.length < 3) parts.unshift(0);
+    const [h, m, sec] = parts.slice(-3);
+    return h * 60 + m + sec / 60;
+  }
+  return 0;
+}
+
+function categorizeMinutes(minutes) {
+  if (minutes <= 0) return null;
+  if (minutes <= 15) return 0;
+  if (minutes <= 30) return 1;
+  if (minutes <= 45) return 2;
+  if (minutes <= 60) return 3;
+  return null;
+}
+
+function findHeader(rows) {
+  for (let r = 0; r < Math.min(5, rows.length); r++) {
+    const row = rows[r];
+    if (!row) continue;
+    const idx = row.findIndex(v => (v !== null && v !== undefined && String(v).trim() === COL_COMPANY));
+    if (idx !== -1) {
+      const colMap = {};
+      row.forEach((v, i) => {
+        if (v !== null && v !== undefined && String(v).trim() !== "") {
+          colMap[String(v).trim()] = i;
+        }
+      });
+      return { headerRowIdx: r, colMap };
+    }
+  }
+  return null;
+}
+
+function processWorkbook(wb) {
+  const sheetName = wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+
+  const header = findHeader(rows);
+  if (!header) {
+    throw new Error(`Не найдена колонка «${COL_COMPANY}» в первых 5 строках листа.`);
+  }
+  const { headerRowIdx, colMap } = header;
+  if (!(COL_COMPANY in colMap)) throw new Error(`Не найдена колонка «${COL_COMPANY}».`);
+  if (!(COL_DURATION in colMap)) throw new Error(`Не найдена колонка «${COL_DURATION}».`);
+
+  const companyCol = colMap[COL_COMPANY];
+  const durationCol = colMap[COL_DURATION];
+
+  const stats = {};
+  let unmatched = 0;
+  let totalRows = 0;
+
+  for (let r = headerRowIdx + 1; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    const companyRaw = row[companyCol];
+    if (companyRaw === null || companyRaw === undefined || String(companyRaw).trim() === "") continue;
+    const company = String(companyRaw).trim();
+
+    const minutes = durationToMinutes(row[durationCol]);
+    const cat = categorizeMinutes(minutes);
+
+    if (!stats[company]) stats[company] = { total: 0, cats: [0, 0, 0, 0] };
+    stats[company].total += 1;
+    if (cat !== null) stats[company].cats[cat] += 1;
+    else unmatched += 1;
+    totalRows += 1;
+  }
+
+  const orderedCompanies = Object.keys(stats).sort((a, b) => a.localeCompare(b, "ru"));
+
+  const dataRows = [];
+  const totals = { total: 0, cats: [0, 0, 0, 0] };
+  orderedCompanies.forEach((company, i) => {
+    const entry = stats[company] || { total: 0, cats: [0, 0, 0, 0] };
+    dataRows.push({ num: i + 1, company, total: entry.total, cats: entry.cats });
+    totals.total += entry.total;
+    for (let k = 0; k < 4; k++) totals.cats[k] += entry.cats[k];
+  });
+
+  return { dataRows, totals, unmatched, totalRows };
+}
+
+function buildOutputWorkbook(dataRows, totals) {
+  const aoa = [];
+  aoa.push(["№ п/п", "Компания", "Тестирование", "Прокторинг", null, null, null]);
+  aoa.push([null, null, null, ...CATEGORY_LABELS]);
+  dataRows.forEach(r => {
+    aoa.push([r.num, r.company, r.total, r.cats[0], r.cats[1], r.cats[2], r.cats[3]]);
+  });
+  aoa.push([null, "ИТОГО ", totals.total, totals.cats[0], totals.cats[1], totals.cats[2], totals.cats[3]]);
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } }, // A1:A2
+    { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } }, // B1:B2
+    { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } }, // C1:C2
+    { s: { r: 0, c: 3 }, e: { r: 0, c: 6 } }, // D1:G1
+  ];
+  ws["!cols"] = [
+    { wch: 6.5 }, { wch: 45.5 }, { wch: 15.7 },
+    { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 },
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Лист1");
+  return wb;
+}
+
+function renderTable(dataRows, totals) {
+  const table = document.getElementById("resultTable");
+  let html = "<thead><tr><th>№</th><th>Компания</th><th>Тестирование</th>" +
+    CATEGORY_LABELS.map(l => `<th>${l}</th>`).join("") + "</tr></thead><tbody>";
+  dataRows.forEach(r => {
+    html += `<tr><td>${r.num}</td><td class="company">${escapeHtml(r.company)}</td><td>${r.total}</td>` +
+      r.cats.map(c => `<td>${c}</td>`).join("") + "</tr>";
+  });
+  html += `<tr class="total"><td></td><td class="company">ИТОГО</td><td>${totals.total}</td>` +
+    totals.cats.map(c => `<td>${c}</td>`).join("") + "</tr>";
+  html += "</tbody>";
+  table.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function setStatus(kind, text) {
+  const el = document.getElementById("status");
+  el.className = "status show " + kind;
+  el.textContent = text;
+}
+
+function handleFile(file) {
+  if (!file) return;
+  setStatus("progress", "Обработка файла…");
+  document.getElementById("panel").classList.remove("show");
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, { type: "array", cellDates: false });
+      const { dataRows, totals, unmatched, totalRows } = processWorkbook(wb);
+
+      const outWb = buildOutputWorkbook(dataRows, totals);
+      lastWorkbookArray = XLSX.write(outWb, { bookType: "xlsx", type: "array" });
+
+      renderTable(dataRows, totals);
+
+      let msg = `Готово. Обработано сеансов: ${totalRows}. По категориям: ` +
+        totals.cats.join(" / ") + `.`;
+      if (unmatched) msg += ` Вне диапазонов (0 или >60 мин): ${unmatched}.`;
+      setStatus("ok", msg);
+
+      document.getElementById("panel").classList.add("show");
+      document.getElementById("panelTitle").textContent = `Результат — ${file.name}`;
+    } catch (err) {
+      console.error(err);
+      setStatus("error", "Ошибка: " + err.message);
+    }
+  };
+  reader.onerror = () => setStatus("error", "Не удалось прочитать файл.");
+  reader.readAsArrayBuffer(file);
+}
+
+const dropzone = document.getElementById("dropzone");
+const fileInput = document.getElementById("fileInput");
+
+dropzone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", (e) => handleFile(e.target.files[0]));
+
+["dragenter", "dragover"].forEach(evt =>
+  dropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    dropzone.classList.add("dragover");
+  })
+);
+["dragleave", "drop"].forEach(evt =>
+  dropzone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+  })
+);
+dropzone.addEventListener("drop", (e) => {
+  const file = e.dataTransfer.files[0];
+  handleFile(file);
+});
+
+document.getElementById("downloadBtn").addEventListener("click", () => {
+  if (!lastWorkbookArray) return;
+  const blob = new Blob([lastWorkbookArray], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "report.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById("resetBtn").addEventListener("click", () => {
+  fileInput.value = "";
+  lastWorkbookArray = null;
+  document.getElementById("panel").classList.remove("show");
+  document.getElementById("status").classList.remove("show");
+});
+</script>
+</body>
+</html>
