@@ -154,7 +154,8 @@
       <li><b>2 категория:</b> 15:01–30:00</li>
       <li><b>3 категория:</b> 30:01–45:00</li>
       <li><b>4 категория:</b> 45:01–60:00</li>
-      <li>Сеансы длительностью 0 или более 60 минут учитываются в «Тестирование», но не попадают ни в одну категорию.</li>
+      <li><b>5 категория:</b> 60+ (более 60 минут)</li>
+      <li>Сеансы нулевой длительности учитываются в «Тестирование», но не попадают ни в одну категорию.</li>
       <li>Список компаний берётся из самой выгрузки (колонка «Центр наименование») и сортируется по алфавиту — заранее заданного перечня нет.</li>
     </ul>
   </details>
@@ -168,6 +169,7 @@ const CATEGORY_LABELS = [
   "2 категория 15:01-30:00",
   "3 категория 30:01-45:00",
   "4 категория 45:01-60:00",
+  "5 категория 60+",
 ];
 
 let lastWorkbookArray = null; // готовый output для скачивания
@@ -199,7 +201,7 @@ function categorizeMinutes(minutes) {
   if (minutes <= 30) return 1;
   if (minutes <= 45) return 2;
   if (minutes <= 60) return 3;
-  return null;
+  return 4;
 }
 
 function findHeader(rows) {
@@ -250,7 +252,7 @@ function processWorkbook(wb) {
     const minutes = durationToMinutes(row[durationCol]);
     const cat = categorizeMinutes(minutes);
 
-    if (!stats[company]) stats[company] = { total: 0, cats: [0, 0, 0, 0] };
+    if (!stats[company]) stats[company] = { total: 0, cats: [0, 0, 0, 0, 0] };
     stats[company].total += 1;
     if (cat !== null) stats[company].cats[cat] += 1;
     else unmatched += 1;
@@ -260,12 +262,12 @@ function processWorkbook(wb) {
   const orderedCompanies = Object.keys(stats).sort((a, b) => a.localeCompare(b, "ru"));
 
   const dataRows = [];
-  const totals = { total: 0, cats: [0, 0, 0, 0] };
+  const totals = { total: 0, cats: [0, 0, 0, 0, 0] };
   orderedCompanies.forEach((company, i) => {
-    const entry = stats[company] || { total: 0, cats: [0, 0, 0, 0] };
+    const entry = stats[company] || { total: 0, cats: [0, 0, 0, 0, 0] };
     dataRows.push({ num: i + 1, company, total: entry.total, cats: entry.cats });
     totals.total += entry.total;
-    for (let k = 0; k < 4; k++) totals.cats[k] += entry.cats[k];
+    for (let k = 0; k < 5; k++) totals.cats[k] += entry.cats[k];
   });
 
   return { dataRows, totals, unmatched, totalRows };
@@ -276,20 +278,20 @@ function buildOutputWorkbook(dataRows, totals) {
   aoa.push(["№ п/п", "Компания", "Тестирование", "Прокторинг", null, null, null]);
   aoa.push([null, null, null, ...CATEGORY_LABELS]);
   dataRows.forEach(r => {
-    aoa.push([r.num, r.company, r.total, r.cats[0], r.cats[1], r.cats[2], r.cats[3]]);
+    aoa.push([r.num, r.company, r.total, r.cats[0], r.cats[1], r.cats[2], r.cats[3], r.cats[4]]);
   });
-  aoa.push([null, "ИТОГО ", totals.total, totals.cats[0], totals.cats[1], totals.cats[2], totals.cats[3]]);
+  aoa.push([null, "ИТОГО ", totals.total, totals.cats[0], totals.cats[1], totals.cats[2], totals.cats[3], totals.cats[4]]);
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws["!merges"] = [
     { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } }, // A1:A2
     { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } }, // B1:B2
     { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } }, // C1:C2
-    { s: { r: 0, c: 3 }, e: { r: 0, c: 6 } }, // D1:G1
+    { s: { r: 0, c: 3 }, e: { r: 0, c: 7 } }, // D1:H1
   ];
   ws["!cols"] = [
     { wch: 6.5 }, { wch: 45.5 }, { wch: 15.7 },
-    { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 },
+    { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 }, { wch: 12.4 },
   ];
 
   const wb = XLSX.utils.book_new();
@@ -340,7 +342,7 @@ function handleFile(file) {
 
       let msg = `Готово. Обработано сеансов: ${totalRows}. По категориям: ` +
         totals.cats.join(" / ") + `.`;
-      if (unmatched) msg += ` Вне диапазонов (0 или >60 мин): ${unmatched}.`;
+      if (unmatched) msg += ` Нулевой длительности (не проктерились): ${unmatched}.`;
       setStatus("ok", msg);
 
       document.getElementById("panel").classList.add("show");
