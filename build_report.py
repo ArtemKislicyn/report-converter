@@ -8,20 +8,19 @@ build_report.py
 "sessions-2026-08-14.xlsx") в утверждённую форму отчёта
 ("форма_предоставления_отчета.xlsx"):
 
-    № п/п | Компания | Тестирование | Прокторинг (5 категорий по длительности)
+    № п/п | Компания | Тестирование | Прокторинг (4 категории по длительности)
 
 Категории Прокторинга — это диапазоны длительности сеанса (колонка "Время"
 в исходном файле):
     1 категория: 00:01 - 15:00 (мин:сек, т.е. > 0 и <= 15 минут)
     2 категория: 15:01 - 30:00
     3 категория: 30:01 - 45:00
-    4 категория: 45:01 - 60:00
-    5 категория: 60+ (более 60 минут)
+    4 категория: 45:01 и более (бывшая 5 категория "60+" объединена с 4-й)
 
 "Тестирование" — общее количество сеансов (строк) по компании.
-Сеансы с нулевой длительностью (00:00) не попадают ни в одну из 5
+Сеансы с нулевой длительностью (00:00) не попадают ни в одну из 4
 категорий Прокторинга — все остальные (включая любые, дольше часа)
-теперь распределяются по категориям 1-5 без остатка.
+распределяются по категориям 1-4 без остатка.
 Эта логика вынесена в функцию `categorize_minutes()` — при необходимости
 её легко изменить.
 
@@ -31,6 +30,18 @@ build_report.py
 
 Пример:
     python build_report.py sessions-2026-08-14.xlsx report-2026-08-14.xlsx
+
+РАЗОВЫЕ ДОСЧЁТЫ (необязательно)
+--------------------------------
+Для нестандартных случаев — например, долга прошлого периода, которого нет
+в выгрузке — можно прибавить сеансы к компании по категориям:
+
+    python build_report.py in.xlsx out.xlsx \\
+        --add 'ООО "Меретояханефтегаз"=500,500,200,53'
+
+Формат: "Компания=к1,к2,к3,к4". Флаг можно повторять. Сеансы прибавляются
+к категориям и к "Тестированию" компании; если компании нет в выгрузке,
+она добавляется отдельной строкой (скрипт предупредит об этом).
 
 Список компаний в отчёт НЕ задаётся заранее — берутся ровно те компании,
 которые встретились в загруженном файле (колонка "Центр наименование"),
@@ -55,9 +66,9 @@ CATEGORY_LABELS = [
     "1 категория 00:01-15:00",
     "2 категория 15:01-30:00",
     "3 категория 30:01-45:00",
-    "4 категория 45:01-60:00",
-    "5 категория 60+",
+    "4 категория 45:01 и более",
 ]
+N_CATS = len(CATEGORY_LABELS)
 
 
 def duration_to_minutes(value):
@@ -90,9 +101,14 @@ def duration_to_minutes(value):
 
 def categorize_minutes(minutes):
     """
-    Возвращает индекс категории (0-4) или None, если сеанс не проктерился
-    (0 минут). Всё, что дольше 60 минут, попадает в категорию 4 ("60+").
+    Возвращает индекс категории (0-3) или None, если сеанс не проктерился
+    (0 минут). Всё, что дольше 45 минут (включая сеансы свыше часа),
+    попадает в 4 категорию.
     """
+    # Excel хранит время как долю суток, и ровно 15:00 может прийти как
+    # 15.00000000000005 мин. Округляем до целой секунды, иначе граничные
+    # сеансы (15:00, 30:00, 45:00) уходят в следующую категорию.
+    minutes = round(minutes * 60) / 60
     if minutes <= 0:
         return None
     if minutes <= 15:
@@ -101,9 +117,7 @@ def categorize_minutes(minutes):
         return 1
     if minutes <= 45:
         return 2
-    if minutes <= 60:
-        return 3
-    return 4
+    return 3
 
 
 def find_header_row(ws):
@@ -126,9 +140,23 @@ def find_header_row(ws):
 def load_source(path):
     """Читает исходную выгрузку и агрегирует данные по компаниям."""
     wb = openpyxl.load_workbook(path, data_only=True)
-    ws = wb.active
 
-    header_row_idx, col_map = find_header_row(ws)
+    # Лист с сеансами ищем по заголовку, а не берём активный: в выгрузке
+    # бывают дополнительные листы ("Сводная таблица", "Итоговый отчет"),
+    # и активным может оказаться любой из них.
+    ws, header_row_idx, col_map = None, None, None
+    for candidate in wb.worksheets:
+        try:
+            header_row_idx, col_map = find_header_row(candidate)
+            ws = candidate
+            break
+        except ValueError:
+            continue
+    if ws is None:
+        raise ValueError(
+            f"Ни на одном листе не найдена строка заголовков с колонкой "
+            f"'{COL_COMPANY}' (проверены первые 5 строк каждого листа)."
+        )
     if COL_COMPANY not in col_map:
         raise ValueError(f"В файле не найдена колонка '{COL_COMPANY}'.")
     if COL_DURATION not in col_map:
@@ -137,7 +165,7 @@ def load_source(path):
     company_col = col_map[COL_COMPANY]
     duration_col = col_map[COL_DURATION]
 
-    stats = {}  # company -> {"total": int, "cats": [c1, c2, c3, c4, c5]}
+    stats = {}  # company -> {"total": int, "cats": [c1, c2, c3, c4]}
     unmatched_durations = 0
 
     for row in ws.iter_rows(min_row=header_row_idx + 1):
@@ -151,7 +179,7 @@ def load_source(path):
         minutes = duration_to_minutes(duration_cell.value)
         cat = categorize_minutes(minutes)
 
-        entry = stats.setdefault(company, {"total": 0, "cats": [0, 0, 0, 0, 0]})
+        entry = stats.setdefault(company, {"total": 0, "cats": [0] * N_CATS})
         entry["total"] += 1
         if cat is not None:
             entry["cats"][cat] += 1
@@ -159,6 +187,48 @@ def load_source(path):
             unmatched_durations += 1
 
     return stats, unmatched_durations
+
+
+def parse_adjustment(text):
+    """Разбирает строку досчёта вида 'Компания=к1,к2,к3,к4'."""
+    if "=" not in text:
+        raise ValueError(f"Досчёт '{text}': ожидается формат 'Компания=к1,к2,к3,к4'.")
+    company, nums = text.rsplit("=", 1)
+    company = company.strip()
+    if not company:
+        raise ValueError(f"Досчёт '{text}': не указана компания.")
+    try:
+        cats = [int(n.strip() or 0) for n in nums.split(",")]
+    except ValueError:
+        raise ValueError(f"Досчёт '{text}': количества должны быть целыми числами.")
+    if len(cats) != N_CATS or any(n < 0 for n in cats):
+        raise ValueError(
+            f"Досчёт '{text}': нужно ровно {N_CATS} неотрицательных числа через запятую."
+        )
+    return company, cats
+
+
+def apply_adjustments(stats, adjustments):
+    """
+    Прибавляет разовые досчёты к статистике. Возвращает список компаний,
+    которых не было в выгрузке (для предупреждения).
+    """
+    new_companies = []
+    for company, cats in adjustments:
+        if company not in stats:
+            new_companies.append(company)
+            stats[company] = {"total": 0, "cats": [0] * N_CATS}
+        entry = stats[company]
+        for k in range(N_CATS):
+            entry["cats"][k] += cats[k]
+        entry["total"] += sum(cats)
+    return new_companies
+
+
+def _ru_sort_key(name):
+    """Ключ сортировки, близкий к localeCompare(..., "ru") в браузере."""
+    ignored = "\"'«»„“” "
+    return "".join(ch for ch in name.casefold() if ch not in ignored)
 
 
 def build_output(stats, output_path):
@@ -179,7 +249,7 @@ def build_output(stats, output_path):
     ws.merge_cells("A1:A2")
     ws.merge_cells("B1:B2")
     ws.merge_cells("C1:C2")
-    ws.merge_cells("D1:H1")
+    ws.merge_cells("D1:G1")
 
     ws["A1"] = "№ п/п"
     ws["B1"] = "Компания"
@@ -189,29 +259,31 @@ def build_output(stats, output_path):
         ws[coord].alignment = center
         ws[coord].border = border_header
 
-    for col, label in zip(("D2", "E2", "F2", "G2", "H2"), CATEGORY_LABELS):
+    for col, label in zip(("D2", "E2", "F2", "G2"), CATEGORY_LABELS):
         ws[col] = label
         ws[col].alignment = center_top_wrap
         ws[col].border = border_header
 
-    for coord in ("A2", "B2", "C2", "E1", "F1", "G1", "H1"):
+    for coord in ("A2", "B2", "C2", "E1", "F1", "G1"):
         ws[coord].border = border_header
 
     ws.column_dimensions["A"].width = 6.5
     ws.column_dimensions["B"].width = 45.5
     ws.column_dimensions["C"].width = 15.7
-    for col in ("D", "E", "F", "G", "H"):
+    for col in ("D", "E", "F", "G"):
         ws.column_dimensions[col].width = 12.4
     ws.row_dimensions[1].height = 14.25
     ws.row_dimensions[2].height = 28.5
 
     # --- Список компаний: ровно то, что встретилось в выгрузке ---
-    ordered_companies = sorted(stats.keys())
+    # Сортировка как в HTML-версии (localeCompare "ru"): без учёта регистра,
+    # кавычки и пробелы не сдвигают порядок.
+    ordered_companies = sorted(stats.keys(), key=_ru_sort_key)
 
     row_idx = 3
-    totals = {"total": 0, "cats": [0, 0, 0, 0, 0]}
+    totals = {"total": 0, "cats": [0] * N_CATS}
     for i, company in enumerate(ordered_companies, start=1):
-        entry = stats.get(company, {"total": 0, "cats": [0, 0, 0, 0, 0]})
+        entry = stats.get(company, {"total": 0, "cats": [0] * N_CATS})
         total = entry["total"]
         cats = entry["cats"]
 
@@ -219,17 +291,17 @@ def build_output(stats, output_path):
         ws.cell(row=row_idx, column=2, value=company).alignment = left
         ws.cell(row=row_idx, column=3, value=total).alignment = center
         for j, val in enumerate(cats):
-            # Пишем явные числа (включая 0) во все 5 колонок категорий.
+            # Пишем явные числа (включая 0) во все колонки категорий.
             # В образце формы часть пустых ячеек оставлена без значения
             # (видимо, вручную), но для автоматической генерации явные
             # нули однозначнее и корректно суммируются формулами Excel.
             ws.cell(row=row_idx, column=4 + j, value=val).alignment = center
 
-        for col in range(1, 9):
+        for col in range(1, 4 + N_CATS):
             ws.cell(row=row_idx, column=col).border = border_data
 
         totals["total"] += total
-        for k in range(5):
+        for k in range(N_CATS):
             totals["cats"][k] += cats[k]
         row_idx += 1
 
@@ -238,11 +310,11 @@ def build_output(stats, output_path):
     ws.cell(row=row_idx, column=2).font = Font(bold=True)
     ws.cell(row=row_idx, column=3, value=totals["total"]).alignment = center
     ws.cell(row=row_idx, column=3).font = Font(bold=True)
-    for j in range(5):
+    for j in range(N_CATS):
         c = ws.cell(row=row_idx, column=4 + j, value=totals["cats"][j])
         c.alignment = center
         c.font = Font(bold=True)
-    for col in range(1, 9):
+    for col in range(1, 4 + N_CATS):
         ws.cell(row=row_idx, column=col).border = border_data
 
     wb.save(output_path)
@@ -256,14 +328,35 @@ def main():
     )
     parser.add_argument("input", help="Путь к исходному файлу выгрузки (.xlsx)")
     parser.add_argument("output", help="Путь к выходному файлу отчёта (.xlsx)")
+    parser.add_argument(
+        "--add", action="append", default=[], metavar="'Компания=к1,к2,к3,к4'",
+        help="Разовый досчёт сеансов по категориям (можно повторять).",
+    )
     args = parser.parse_args()
 
+    try:
+        adjustments = [parse_adjustment(a) for a in args.add]
+    except ValueError as e:
+        parser.error(str(e))
+
     stats, unmatched = load_source(args.input)
+    source_total = sum(e["total"] for e in stats.values())
+    new_companies = apply_adjustments(stats, adjustments)
     output_path, totals = build_output(stats, args.output)
 
     print(f"Готово: {output_path}")
+    print(f"Сеансов в выгрузке: {source_total}")
+    if adjustments:
+        added = [sum(c[k] for _, c in adjustments) for k in range(N_CATS)]
+        print(f"Досчёты: +{sum(added)} (по категориям {added})")
+        for company in new_companies:
+            print(f"  ВНИМАНИЕ: компании «{company}» нет в выгрузке — "
+                  f"добавлена отдельной строкой. Проверьте написание.")
     print(f"Всего сеансов (Тестирование): {totals['total']}")
     print(f"По категориям Прокторинга: {totals['cats']}")
+    cats_line = ", ".join(f"{k + 1} категория - {n}" for k, n in enumerate(totals["cats"]))
+    print(f"Итого: верификацию нарушений во время сеанса тестирований, "
+          f"{cats_line}, всего: {sum(totals['cats'])}")
     if unmatched:
         print(f"Сеансов вне категорий (длительность 0 мин): {unmatched}")
 
